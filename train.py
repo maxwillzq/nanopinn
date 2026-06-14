@@ -70,31 +70,30 @@ def save_collocation_history(points_history, path):
     jnp.savez(path, **points_history)
     print(f"Saved collocation history to {path}")
 
-def adaptive_resample(params, t_col, x_col, nu, key, top_k=2000, noise_std=0.005):
-    """自适应重采样机制 (RAR)：找出物理残差最大的 top_k 个点，并在其周围分裂繁衍"""
-    f_preds = residual_v(params, t_col, x_col, nu)
+def adaptive_resample(params, t_adapt, x_adapt, nu, key, top_k=1500, noise_std=0.005):
+    """自适应重采样机制 (RAR)：仅在自适应点集内部淘汰，找出残差最大的 top_k 个点在其周围分裂，并替换残差最小的点"""
+    f_preds = residual_v(params, t_adapt, x_adapt, nu)
     abs_residuals = jnp.abs(f_preds)
     
-    # 按照残差大小排序，提取 top_k 个困难点
+    # 按照残差大小排序，在自适应集内部提取 top_k 个困难点
     top_indices = jnp.argsort(abs_residuals)[-top_k:]
-    t_hard = t_col[top_indices]
-    x_hard = x_col[top_indices]
+    t_hard = t_adapt[top_indices]
+    x_hard = x_adapt[top_indices]
     
-    # 局部高斯扰动繁衍出新点
+    # 局部高斯扰动繁衍新点
     k1, k2 = jax.random.split(key)
     t_new = t_hard + jax.random.normal(k1, shape=t_hard.shape) * noise_std
     x_new = x_hard + jax.random.normal(k2, shape=x_hard.shape) * noise_std
     
-    # 用新点替换掉已学好（残差最小）的 top_k 个容易点，保证 Static Shapes
+    # 替换自适应集内部残差最小的 top_k 个点，以维持 Static Shapes
     bottom_indices = jnp.argsort(abs_residuals)[:top_k]
-    t_col = t_col.at[bottom_indices].set(t_new)
-    x_col = x_col.at[bottom_indices].set(x_new)
+    t_adapt = t_adapt.at[bottom_indices].set(t_new)
+    x_adapt = x_adapt.at[bottom_indices].set(x_new)
     
-    # 确保坐标不溢出 [0, 1]x[-1, 1]
-    t_col = jnp.clip(t_col, 0.0, 1.0)
-    x_col = jnp.clip(x_col, -1.0, 1.0)
+    t_adapt = jnp.clip(t_adapt, 0.0, 1.0)
+    x_adapt = jnp.clip(x_adapt, -1.0, 1.0)
     
-    return t_col, x_col
+    return t_adapt, x_adapt
 
 def main():
     # 命令行解析模式
@@ -128,10 +127,17 @@ def main():
     u_bc = jnp.zeros(N_bc)
 
     # 3. 物理控制共轭采样点 (训练采样)
-    N_col = 10000
-    k1, k2 = jax.random.split(key)
-    t_col = jax.random.uniform(k1, (N_col,), minval=0.0, maxval=1.0)
-    x_col = jax.random.uniform(k2, (N_col,), minval=-1.0, maxval=1.0)
+    # 我们采用混合自适应采样 (Hybrid RAR)：50% 固定背景点，50% 自适应追踪点
+    N_bg = 5000
+    N_adapt = 5000
+    
+    k1, k2, k3, k4 = jax.random.split(key, 4)
+    # 固定背景点 (整个训练过程中不变)
+    t_bg = jax.random.uniform(k1, (N_bg,), minval=0.0, maxval=1.0)
+    x_bg = jax.random.uniform(k2, (N_bg,), minval=-1.0, maxval=1.0)
+    # 自适应追踪点 (会动态重采样)
+    t_adapt = jax.random.uniform(k3, (N_adapt,), minval=0.0, maxval=1.0)
+    x_adapt = jax.random.uniform(k4, (N_adapt,), minval=-1.0, maxval=1.0)
 
     # 4. 固定的测试网格 (100x100 = 10000点，用于计算客观 Validation Loss)
     val_n = 100
@@ -146,10 +152,10 @@ def main():
     history_train_loss = []
     history_val_loss = []
 
-    # 记录点集时空演化历史 (仅用于 rar 模式)
+    # 记录点集时空演化历史 (合并背景和自适应点，仅用于 rar 模式)
     points_history = {
-        "t_step_0": t_col,
-        "x_step_0": x_col
+        "t_step_0": jnp.concatenate([t_bg, t_adapt]),
+        "x_step_0": jnp.concatenate([x_bg, x_adapt])
     }
 
     # 编译训练单步更新函数
@@ -164,6 +170,10 @@ def main():
 
     print(f"Starting training loop in '{mode}' mode...")
     for step in range(1, steps + 1):
+        # 合并背景点与自适应追踪点，保持总点数 10000 恒定
+        t_col = jnp.concatenate([t_bg, t_adapt])
+        x_col = jnp.concatenate([x_bg, x_adapt])
+
         params, opt_state, loss = train_step(params, opt_state, t_col, x_col)
         
         # 每 100 步记录一次全局物理残差与训练损失
@@ -179,18 +189,18 @@ def main():
             print(f"Step {step}/{steps} - Loss: {loss:.5e}")
             
             if mode == "rar":
-                # 自适应重采样
+                # 自适应重采样：仅在自适应组 N_adapt 内部进行淘汰替换
                 key, subkey = jax.random.split(key)
-                t_col, x_col = adaptive_resample(
-                    params, t_col, x_col, nu, subkey,
-                    top_k=2000,
+                t_adapt, x_adapt = adaptive_resample(
+                    params, t_adapt, x_adapt, nu, subkey,
+                    top_k=1500,  # 每次更新 5000 点中的 1500 点
                     noise_std=0.005
                 )
                 
-                # 每 3000 步记录历史坐标
+                # 每 3000 步记录合并后的完整坐标快照
                 if step % 3000 == 0:
-                    points_history[f"t_step_{step}"] = t_col
-                    points_history[f"x_step_{step}"] = x_col
+                    points_history[f"t_step_{step}"] = jnp.concatenate([t_bg, t_adapt])
+                    points_history[f"x_step_{step}"] = jnp.concatenate([x_bg, x_adapt])
 
     # 保存 Loss 收敛历史
     history_path = f"loss_history_{mode}.npz"
