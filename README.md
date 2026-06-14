@@ -91,21 +91,22 @@ This reads the parameters and generates `burgers_shock_wave.png` overlaying the 
 
 ---
 
-## 📈 Self-Adaptive Refinement (RAR) & Evolution
+## 📈 Self-Adaptive Refinement (Hybrid RAR) & Evolution
 
-Physics-Informed Neural Networks often struggle to capture sharp gradients (shock fronts) because uniform points waste calculation parameters on smooth zones. **nanoPINN** features a JAX-accelerated Residual-based Adaptive Resampling (RAR) mechanism:
-- Every 1,000 steps, it calculates the PDE residual at all points, extracts the top 2,000 points with highest residuals, and injects small Gaussian noise to multiply/spawn new points around them.
-- To maintain JIT compilation efficiency (Static Shapes), it replaces the 2,000 points with the lowest residuals.
+Physics-Informed Neural Networks often struggle to capture sharp gradients (shock fronts) because uniform points waste calculation power on smooth zones. **nanoPINN** implements a JAX-accelerated **Hybrid Residual-based Adaptive Resampling (Hybrid RAR)** mechanism:
+- **Fixed Background Points**: 5,000 collocation points are sampled uniformly at start and remain stationary. These act as a regularization anchor to prevent parameter drift in smooth regions.
+- **Adaptive Tracking Points**: 5,000 points dynamically resampled every 1,000 epochs. It calculates PDE residuals, extracts the top 1,500 points with highest residuals, and spawns new points around them via small Gaussian perturbation ($\sigma = 0.005$) to replace the bottom 1,500 points.
+- **Static Shapes**: The total collocation count ($5,000 + 5,000 = 10,000$) remains constant to preserve JAX's `@jax.jit` compile efficiency.
 
 ### The "Survival of the Fittest" Point Evolution
-To visualize this, run `python plot.py` after training in `--mode rar`. It creates `collocation_evolution.png` showing how points migrate over training epochs:
+To visualize this, run `python plot.py` after training in `--mode rar`. It creates `collocation_evolution.png` showing how points migrate:
 
 ![Collocation Points Evolution](collocation_evolution.png)
 
 As shown above:
 - **Step 0**: Completely uniform grid.
-- **Step 3000-6000**: Points migrate away from smooth areas and converge along the steepening waves.
-- **Step 9000-15000**: Once the wave collapses into a shock at $t \approx 0.32$, the points assemble as a razor-thin, highly dense line at $x=0$, showing dynamic refinement.
+- **Step 3000-6000**: Tracking points migrate away from smooth areas and converge along the steepening waves, while the 5,000 fixed points remain as a steady background grid.
+- **Step 9000-15000**: Once the wave collapses into a shock at $t \approx 0.32$, the tracking points assemble as a razor-thin, highly dense line at $x=0$, showing dynamic refinement working hand-in-hand with background constraints.
 
 ---
 
@@ -120,9 +121,10 @@ This generates `loss_comparison.png`:
 
 ![Loss Convergence Comparison](loss_comparison.png)
 
-### Key Insights:
-- **Training Loss (Left)**: The Uniform Baseline (blue) training loss goes lower ($\approx 8 \times 10^{-4}$) than the RAR Adaptive (red, $\approx 1.3 \times 10^{-2}$). This is expected, as RAR focuses its evaluations almost entirely on hard points, while Uniform averages its loss over easy, smooth zones.
-- **Validation Loss (Right)**: On the objective grid, the Uniform Baseline achieves a lower MSE. This reveals the **Over-Refinement Trade-off** in PINNs: when points migrate *too aggressively* to the shock, the flat regions lose supervision and start to drift. Balancing uniform background points with adaptive ones is key to solving this.
+### Key Insights & The "Over-Refinement" Trade-off:
+- **Training Loss (Left)**: The Uniform Baseline (blue) training loss goes lower ($\approx 8 \times 10^{-4}$) than the RAR Adaptive (red, $\approx 8 \times 10^{-3}$). This is expected, as RAR focuses its evaluations almost entirely on hard points, while Uniform averages its loss over easy, smooth zones.
+- **Validation Loss (Right)**: On the objective grid, the Uniform Baseline achieves a lower average MSE. This highlights the **Over-Refinement Trade-off** in PINNs: when points migrate *too aggressively* to the shock, flat regions lose supervision and start to drift.
+- **The Hybrid Solution**: By introducing 5,000 fixed background points, the Hybrid RAR validation loss dropped from $6 \times 10^{-3}$ to $\approx 4 \times 10^{-3}$, showing how background constraints mitigate drift. To beat the uniform baseline globally, one can adjust the ratio (e.g. 70% background, 30% adaptive) or evaluate local MSE specifically at the shock zone where RAR excels.
 
 ---
 
