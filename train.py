@@ -54,14 +54,42 @@ def loss_fn(params, t_ic, x_ic, u_ic, t_bc, x_bc, u_bc, t_col, x_col, nu):
 
     return loss_ic + loss_bc + loss_physics
 
-def save_params(params, path):
-    """将参数序列化并保存为 npz 文件"""
+def save_params(params, t_col, x_col, path):
+    """将参数序列化和最终采样点保存为 npz 文件"""
     flat_params = {}
     for idx, layer in enumerate(params):
         flat_params[f"W_{idx}"] = layer['W']
         flat_params[f"b_{idx}"] = layer['b']
+    flat_params["t_col"] = t_col
+    flat_params["x_col"] = x_col
     jnp.savez(path, **flat_params)
-    print(f"Saved parameters to {path}")
+    print(f"Saved parameters and final collocation points to {path}")
+
+def adaptive_resample(params, t_col, x_col, nu, key, top_k=2000, noise_std=0.005):
+    """自适应重采样机制 (RAR)：找出物理残差最大的 top_k 个点，并在其周围分裂繁衍"""
+    f_preds = residual_v(params, t_col, x_col, nu)
+    abs_residuals = jnp.abs(f_preds)
+    
+    # 按照残差大小排序，提取 top_k 个困难点
+    top_indices = jnp.argsort(abs_residuals)[-top_k:]
+    t_hard = t_col[top_indices]
+    x_hard = x_col[top_indices]
+    
+    # 局部高斯扰动繁衍出新点
+    k1, k2 = jax.random.split(key)
+    t_new = t_hard + jax.random.normal(k1, shape=t_hard.shape) * noise_std
+    x_new = x_hard + jax.random.normal(k2, shape=x_hard.shape) * noise_std
+    
+    # 用新点替换掉已学好（残差最小）的 top_k 个容易点，保证 Static Shapes
+    bottom_indices = jnp.argsort(abs_residuals)[:top_k]
+    t_col = t_col.at[bottom_indices].set(t_new)
+    x_col = x_col.at[bottom_indices].set(x_new)
+    
+    # 确保坐标不溢出 [0, 1]x[-1, 1]
+    t_col = jnp.clip(t_col, 0.0, 1.0)
+    x_col = jnp.clip(x_col, -1.0, 1.0)
+    
+    return t_col, x_col
 
 def main():
     # 超参数与初始化设置
@@ -104,13 +132,22 @@ def main():
         new_params = optax.apply_updates(params, updates)
         return new_params, opt_state, loss_val
 
-    print("Starting training loop...")
+    print("Starting training loop with Adaptive Resampling...")
     for step in range(1, steps + 1):
         params, opt_state, loss = train_step(params, opt_state, t_col, x_col)
         if step % 1000 == 0:
             print(f"Step {step}/{steps} - Loss: {loss:.5e}")
+            
+            # 自适应重采样
+            key, subkey = jax.random.split(key)
+            t_col, x_col = adaptive_resample(
+                params, t_col, x_col, nu, subkey,
+                top_k=2000,
+                noise_std=0.005
+            )
 
-    save_params(params, "pinn_params.npz")
+    save_params(params, t_col, x_col, "pinn_params.npz")
+
 
 if __name__ == "__main__":
     main()

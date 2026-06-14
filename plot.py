@@ -47,9 +47,19 @@ def main():
     ax1 = fig.add_subplot(121)
     im = ax1.imshow(U, extent=[0, 1, -1, 1], cmap='rainbow', aspect='auto', origin='lower')
     fig.colorbar(im, ax=ax1, label='u(t, x)')
+    
+    # 叠加自适应采样的共轭点
+    data = jnp.load("pinn_params.npz")
+    if "t_col" in data and "x_col" in data:
+        t_col = data["t_col"]
+        x_col = data["x_col"]
+        ax1.scatter(t_col, x_col, color='black', alpha=0.15, s=0.3, label='Collocation Points')
+        ax1.legend(loc='upper right')
+
     ax1.set_xlabel('Time (t)')
     ax1.set_ylabel('Space (x)')
     ax1.set_title("Burgers' Equation Flow Field Colormap")
+
 
     # 2. 特定时间的速度剖面曲线
     ax2 = fig.add_subplot(122)
