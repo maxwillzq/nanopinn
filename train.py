@@ -2,6 +2,8 @@ import jax
 import jax.numpy as jnp
 import optax
 import numpy as np
+import argparse
+
 
 def init_weights(layer_sizes, key):
     """手工初始化神经网络参数 (PyTree)"""
@@ -95,6 +97,12 @@ def adaptive_resample(params, t_col, x_col, nu, key, top_k=2000, noise_std=0.005
     return t_col, x_col
 
 def main():
+    # 命令行解析模式
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, default="rar", choices=["uniform", "rar"])
+    args = parser.parse_args()
+    mode = args.mode
+
     # 超参数与初始化设置
     key = jax.random.PRNGKey(42)
     layer_sizes = [2, 20, 20, 20, 20, 1]
@@ -119,13 +127,26 @@ def main():
     x_bc = jnp.concatenate([jnp.ones(N_bc // 2) * -1.0, jnp.ones(N_bc // 2) * 1.0])
     u_bc = jnp.zeros(N_bc)
 
-    # 3. 物理控制共轭点采样
+    # 3. 物理控制共轭采样点 (训练采样)
     N_col = 10000
     k1, k2 = jax.random.split(key)
     t_col = jax.random.uniform(k1, (N_col,), minval=0.0, maxval=1.0)
     x_col = jax.random.uniform(k2, (N_col,), minval=-1.0, maxval=1.0)
 
-    # 记录点集时空演化历史
+    # 4. 固定的测试网格 (100x100 = 10000点，用于计算客观 Validation Loss)
+    val_n = 100
+    t_val_ticks = jnp.linspace(0.0, 1.0, val_n)
+    x_val_ticks = jnp.linspace(-1.0, 1.0, val_n)
+    T_val, X_val = jnp.meshgrid(t_val_ticks, x_val_ticks)
+    t_val_grid = T_val.flatten()
+    x_val_grid = X_val.flatten()
+
+    # 用于记录收敛历史数据
+    history_steps = []
+    history_train_loss = []
+    history_val_loss = []
+
+    # 记录点集时空演化历史 (仅用于 rar 模式)
     points_history = {
         "t_step_0": t_col,
         "x_step_0": x_col
@@ -141,27 +162,50 @@ def main():
         new_params = optax.apply_updates(params, updates)
         return new_params, opt_state, loss_val
 
-    print("Starting training loop with Adaptive Resampling...")
+    print(f"Starting training loop in '{mode}' mode...")
     for step in range(1, steps + 1):
         params, opt_state, loss = train_step(params, opt_state, t_col, x_col)
+        
+        # 每 100 步记录一次全局物理残差与训练损失
+        if step % 100 == 0:
+            f_val_pred = residual_v(params, t_val_grid, x_val_grid, nu)
+            val_loss = jnp.mean(f_val_pred ** 2)
+            
+            history_steps.append(step)
+            history_train_loss.append(float(loss))
+            history_val_loss.append(float(val_loss))
+
         if step % 1000 == 0:
             print(f"Step {step}/{steps} - Loss: {loss:.5e}")
             
-            # 自适应重采样
-            key, subkey = jax.random.split(key)
-            t_col, x_col = adaptive_resample(
-                params, t_col, x_col, nu, subkey,
-                top_k=2000,
-                noise_std=0.005
-            )
-            
-            # 每 3000 步记录历史坐标
-            if step % 3000 == 0:
-                points_history[f"t_step_{step}"] = t_col
-                points_history[f"x_step_{step}"] = x_col
+            if mode == "rar":
+                # 自适应重采样
+                key, subkey = jax.random.split(key)
+                t_col, x_col = adaptive_resample(
+                    params, t_col, x_col, nu, subkey,
+                    top_k=2000,
+                    noise_std=0.005
+                )
+                
+                # 每 3000 步记录历史坐标
+                if step % 3000 == 0:
+                    points_history[f"t_step_{step}"] = t_col
+                    points_history[f"x_step_{step}"] = x_col
 
-    save_params(params, "pinn_params.npz")
-    save_collocation_history(points_history, "collocation_history.npz")
+    # 保存 Loss 收敛历史
+    history_path = f"loss_history_{mode}.npz"
+    np.savez(
+        history_path,
+        steps=np.array(history_steps),
+        train_loss=np.array(history_train_loss),
+        val_loss=np.array(history_val_loss)
+    )
+    print(f"Saved loss history to {history_path}")
+
+    # 保存模型权重参数
+    save_params(params, f"pinn_params_{mode}.npz")
+    if mode == "rar":
+        save_collocation_history(points_history, "collocation_history.npz")
 
 
 if __name__ == "__main__":
