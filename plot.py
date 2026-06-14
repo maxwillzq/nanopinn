@@ -25,6 +25,38 @@ def forward(params, t, x):
 
 forward_v = jax.vmap(forward, in_axes=(None, 0, 0))
 
+def plot_evolution(collocation_path):
+    """绘制采样点演化历史图 (2x3 面板)"""
+    try:
+        data = jnp.load(collocation_path)
+    except FileNotFoundError:
+        print("Skipping evolution plot: collocation history file not found.")
+        return
+        
+    steps = [0, 3000, 6000, 9000, 12000, 15000]
+    if not all(f"t_step_{s}" in data for s in steps):
+        print("Skipping evolution plot: incomplete steps in file.")
+        return
+        
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.flatten()
+    
+    for idx, s in enumerate(steps):
+        t_col = data[f"t_step_{s}"]
+        x_col = data[f"x_step_{s}"]
+        ax = axes[idx]
+        ax.scatter(t_col, x_col, color='blue', alpha=0.1, s=0.5)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(-1, 1)
+        ax.set_title(f"Collocation Points at Step {s}")
+        ax.set_xlabel("Time (t)")
+        ax.set_ylabel("Space (x)")
+        ax.grid(True)
+        
+    plt.tight_layout()
+    plt.savefig("collocation_evolution.png", dpi=150)
+    print("Saved evolution plot to collocation_evolution.png")
+
 def main():
     params = load_params("pinn_params.npz")
 
@@ -48,13 +80,16 @@ def main():
     im = ax1.imshow(U, extent=[0, 1, -1, 1], cmap='rainbow', aspect='auto', origin='lower')
     fig.colorbar(im, ax=ax1, label='u(t, x)')
     
-    # 叠加自适应采样的共轭点
-    data = jnp.load("pinn_params.npz")
-    if "t_col" in data and "x_col" in data:
-        t_col = data["t_col"]
-        x_col = data["x_col"]
-        ax1.scatter(t_col, x_col, color='black', alpha=0.15, s=0.3, label='Collocation Points')
-        ax1.legend(loc='upper right')
+    # 叠加自适应采样的共轭点 (最终状态：Step 15000)
+    try:
+        colloc_data = jnp.load("collocation_history.npz")
+        if "t_step_15000" in colloc_data:
+            t_col = colloc_data["t_step_15000"]
+            x_col = colloc_data["x_step_15000"]
+            ax1.scatter(t_col, x_col, color='black', alpha=0.15, s=0.3, label='Collocation Points')
+            ax1.legend(loc='upper right')
+    except FileNotFoundError:
+        print("Collocation history file not found, skipping scatter overlay.")
 
     ax1.set_xlabel('Time (t)')
     ax1.set_ylabel('Space (x)')
@@ -82,6 +117,9 @@ def main():
     plt.tight_layout()
     plt.savefig("burgers_shock_wave.png", dpi=150)
     print("Saved plot to burgers_shock_wave.png")
+
+    # 额外绘制采样点演化历史图
+    plot_evolution("collocation_history.npz")
 
 if __name__ == '__main__':
     main()

@@ -54,16 +54,19 @@ def loss_fn(params, t_ic, x_ic, u_ic, t_bc, x_bc, u_bc, t_col, x_col, nu):
 
     return loss_ic + loss_bc + loss_physics
 
-def save_params(params, t_col, x_col, path):
-    """将参数序列化和最终采样点保存为 npz 文件"""
+def save_params(params, path):
+    """只保存模型参数到 npz 文件"""
     flat_params = {}
     for idx, layer in enumerate(params):
         flat_params[f"W_{idx}"] = layer['W']
         flat_params[f"b_{idx}"] = layer['b']
-    flat_params["t_col"] = t_col
-    flat_params["x_col"] = x_col
     jnp.savez(path, **flat_params)
-    print(f"Saved parameters and final collocation points to {path}")
+    print(f"Saved model parameters to {path}")
+
+def save_collocation_history(points_history, path):
+    """保存共轭点坐标历史到 npz 文件"""
+    jnp.savez(path, **points_history)
+    print(f"Saved collocation history to {path}")
 
 def adaptive_resample(params, t_col, x_col, nu, key, top_k=2000, noise_std=0.005):
     """自适应重采样机制 (RAR)：找出物理残差最大的 top_k 个点，并在其周围分裂繁衍"""
@@ -122,6 +125,12 @@ def main():
     t_col = jax.random.uniform(k1, (N_col,), minval=0.0, maxval=1.0)
     x_col = jax.random.uniform(k2, (N_col,), minval=-1.0, maxval=1.0)
 
+    # 记录点集时空演化历史
+    points_history = {
+        "t_step_0": t_col,
+        "x_step_0": x_col
+    }
+
     # 编译训练单步更新函数
     @jax.jit
     def train_step(params, opt_state, t_col, x_col):
@@ -145,8 +154,14 @@ def main():
                 top_k=2000,
                 noise_std=0.005
             )
+            
+            # 每 3000 步记录历史坐标
+            if step % 3000 == 0:
+                points_history[f"t_step_{step}"] = t_col
+                points_history[f"x_step_{step}"] = x_col
 
-    save_params(params, t_col, x_col, "pinn_params.npz")
+    save_params(params, "pinn_params.npz")
+    save_collocation_history(points_history, "collocation_history.npz")
 
 
 if __name__ == "__main__":
