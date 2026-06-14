@@ -137,6 +137,7 @@ def main():
     # 我们采用混合自适应采样 (Hybrid RAR)：50% 固定背景点，50% 自适应追踪点
     N_bg = 5000
     N_adapt = 5000
+
     
     k1, k2, k3, k4 = jax.random.split(key, 4)
     # 固定背景点 (整个训练过程中不变)
