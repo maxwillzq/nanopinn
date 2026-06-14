@@ -63,11 +63,15 @@ def main():
 
     # 2. 特定时间的速度剖面曲线
     ax2 = fig.add_subplot(122)
-    target_times = [0.0, 0.2, 0.5, 1.0]
+    target_times = [0.0, 0.2, 1.0 / np.pi, 0.5, 1.0]
     for t_val in target_times:
         t_arr = jnp.ones_like(x_ticks) * t_val
         u_val = forward_v(params, t_arr, x_ticks)
-        ax2.plot(x_ticks, u_val, label=f"t = {t_val}")
+        label = f"t = {t_val:.2f}"
+        if np.isclose(t_val, 1.0 / np.pi):
+            label = f"t = 1/π ≈ {t_val:.3f} (Break)"
+        ax2.plot(x_ticks, u_val, label=label)
+
     
     ax2.set_xlabel('Space (x)')
     ax2.set_ylabel('Velocity (u)')
