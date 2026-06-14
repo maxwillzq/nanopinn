@@ -193,10 +193,9 @@ def main():
                 key, subkey = jax.random.split(key)
                 t_adapt, x_adapt = adaptive_resample(
                     params, t_adapt, x_adapt, nu, subkey,
-                    top_k=1500,  # 每次更新 5000 点中的 1500 点
+                    top_k=500,  # 每次更新 5000 点中的 500 点
                     noise_std=0.005
                 )
-                
                 # 每 3000 步记录合并后的完整坐标快照
                 if step % 3000 == 0:
                     points_history[f"t_step_{step}"] = jnp.concatenate([t_bg, t_adapt])
