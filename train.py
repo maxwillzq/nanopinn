@@ -54,7 +54,8 @@ def loss_fn(params, t_ic, x_ic, u_ic, t_bc, x_bc, u_bc, t_col, x_col, nu):
     f_pred = residual_v(params, t_col, x_col, nu)
     loss_physics = jnp.mean(f_pred ** 2)
 
-    return loss_ic + loss_bc + loss_physics
+    # 增加边界与初始条件的权重，防止在大量自适应 collocation 点下边界约束被“淹没”
+    return 100.0 * loss_ic + 100.0 * loss_bc + loss_physics
 
 def save_params(params, path):
     """只保存模型参数到 npz 文件"""
@@ -106,11 +107,17 @@ def main():
     key = jax.random.PRNGKey(42)
     layer_sizes = [2, 20, 20, 20, 20, 1]
     nu = 0.01 / jnp.pi
-    lr = 1e-3
-    steps = 15000
+    steps = 50000
+
+    # 学习率指数衰减调度，缓解自适应采样带来的损失面刚性优化震荡
+    lr_schedule = optax.exponential_decay(
+        init_value=1e-3,
+        transition_steps=10000,
+        decay_rate=0.5
+    )
 
     params = init_weights(layer_sizes, key)
-    optimizer = optax.adam(lr)
+    optimizer = optax.adam(lr_schedule)
     opt_state = optimizer.init(params)
 
     # 1. 初始条件采样: t=0, x ∈ [-1, 1], u = -sin(pi * x)
